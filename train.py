@@ -1,4 +1,3 @@
-# @title train
 from __future__ import absolute_import, division, print_function
 
 import os
@@ -30,11 +29,8 @@ def do_rollouts(args, models, random_seeds, return_queue, env, are_negative):
         # Rollout
         with torch.no_grad():
           for step in range(args.max_episode_length):
-              logit = model(state)
-              # Sample and send action
-              prob = F.softmax(logit, dim=1)
-              action = prob.max(1)[1].data.numpy()
-              state, reward, term, trunc, _ = env.step(action[0])
+              action = model(state)
+              state, reward, term, trunc, _ = env.step(action)
               done = term or trunc
               this_model_return += reward
               this_model_num_frames += 1
