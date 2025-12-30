@@ -2,7 +2,7 @@
 
 This is an adaptation of [atgambardella's PyTorch implementation](https://github.com/atgambardella/pytorch-es) of [Evolution Strategies](https://arxiv.org/abs/1703.03864). I have updated it to be compatible with the current version of PyTorch, along with some other changes. The major ones are as follows:
 
-* Models are now imported from [RLlib](https://github.com/ray-project/ray/tree/master/rllib/examples)'s `RLModuleSpec`s. This is because providing a genetic baseline for RL problems is the primary purpose of this repository.
+* Models are now imported from [RLlib](https://github.com/ray-project/ray/tree/master/rllib/examples)'s `RLModuleSpec`. This is because providing a genetic baseline for RL problems is the primary purpose of this repository.
 
 * Action selection and input preprocessing have been moved from the train loop to the agent class. Dictionary and Repeated observation spaces are now supported.
 
