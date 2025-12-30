@@ -1,15 +1,19 @@
 from __future__ import absolute_import, division, print_function
+import gymnasium as gym
 
 import os
 import argparse
 
 import torch
 
-from envs import create_atari_env
-from model import ES
-from train import train_loop, render_env
+from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import DefaultPPOTorchRLModule
+
+from model import ES_fromRLlib
+from train import train_loop
 
 parser = argparse.ArgumentParser(description='ES')
+
 parser.add_argument('--env-name', default='PongDeterministic-v4',
                     metavar='ENV', help='environment')
 parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
@@ -22,44 +26,49 @@ parser.add_argument('--useAdam', action='store_true',
                     help='bool to determine if to use adam optimizer')
 parser.add_argument('--n', type=int, default=40, metavar='N',
                     help='batch size, must be even')
+
 parser.add_argument('--max-episode-length', type=int, default=100000,
                     metavar='MEL', help='maximum length of an episode')
 parser.add_argument('--max-gradient-updates', type=int, default=100000,
-                    metavar='MGU', help='maximum number of updates')
+                    metavar='MGU', help='maximum number of epochs, when multiplied by batch size')
+
 parser.add_argument('--restore', default='', metavar='RES',
                     help='checkpoint from which to restore')
-parser.add_argument('--small-net', action='store_true',
-                    help='Use simple MLP on CartPole')
+parser.add_argument('--chkpt_dir', default=None, metavar='CPT',
+                    help='checkpoint directory, if any')
+
 parser.add_argument('--variable-ep-len', action='store_true',
                     help="Change max episode length during training")
 parser.add_argument('--silent', action='store_true',
                     help='Silence print statements during training')
-parser.add_argument('--test', action='store_true',
-                    help='Just render the env, no training')
-
-
 
 if __name__ == '__main__':
     args = parser.parse_args()
     assert args.n % 2 == 0
-    if args.small_net and args.env_name not in ['CartPole-v0', 'CartPole-v1',
-                                                'MountainCar-v0']:
-        args.env_name = 'CartPole-v1'
-        print('Switching env to CartPole')
+    env = gym.make(args.env_name)
 
-    env = create_atari_env(args.env_name)
-    chkpt_dir = 'checkpoints/%s/' % args.env_name
-    if not os.path.exists(chkpt_dir):
-        os.makedirs(chkpt_dir)
-    synced_model = ES(env.observation_space.shape[0],
-                      env.action_space, args.small_net)
+    if (args.chkpt_dir is not None):
+        if not os.path.exists(args.chkpt_dir):
+            os.makedirs(args.chkpt_dir)
+
+    # Instantiate RLModuleSpec and build the RLModule
+    module = RLModuleSpec(
+        module_class=DefaultPPOTorchRLModule,
+        observation_space=env.observation_space,
+        action_space=env.action_space,
+        model_config={
+            "fcnet_hiddens": [64, 64], # Sets the encoder arch. The head's a single FC layer
+            "vf_share_layers": True,
+        },
+    ).build()
+            
+    synced_model = ES_fromRLlib(module)
+    
     for param in synced_model.parameters():
         param.requires_grad = False
+      
     if args.restore:
         state_dict = torch.load(args.restore)
         synced_model.load_state_dict(state_dict)
 
-    if args.test:
-        render_env(args, synced_model, env)
-    else:
-        train_loop(args, synced_model, env, chkpt_dir)
+    train_loop(args, synced_model, env, args.chkpt_dir)
