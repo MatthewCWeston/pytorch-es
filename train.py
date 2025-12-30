@@ -1,18 +1,16 @@
+# @title train
 from __future__ import absolute_import, division, print_function
 
 import os
 import math
+import copy
 import numpy as np
 
 import torch
-import torch.legacy.optim as legacyOptim
 
 import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.autograd import Variable
-
-from envs import create_atari_env
-from model import ES
 
 import matplotlib.pyplot as plt
 
@@ -26,34 +24,24 @@ def do_rollouts(args, models, random_seeds, return_queue, env, are_negative):
     all_returns = []
     all_num_frames = []
     for model in models:
-        if not args.small_net:
-            cx = Variable(torch.zeros(1, 256))
-            hx = Variable(torch.zeros(1, 256))
-        state = env.reset()
-        state = torch.from_numpy(state)
+        state, _ = env.reset()
         this_model_return = 0
         this_model_num_frames = 0
         # Rollout
-        for step in range(args.max_episode_length):
-            if args.small_net:
-                state = state.float()
-                state = state.view(1, env.observation_space.shape[0])
-                logit = model(Variable(state, volatile=True))
-            else:
-                logit, (hx, cx) = model(
-                    (Variable(state.unsqueeze(0), volatile=True),
-                     (hx, cx)))
-
-            prob = F.softmax(logit)
-            action = prob.max(1)[1].data.numpy()
-            state, reward, done, _ = env.step(action[0])
-            this_model_return += reward
-            this_model_num_frames += 1
-            if done:
-                break
-            state = torch.from_numpy(state)
-        all_returns.append(this_model_return)
-        all_num_frames.append(this_model_num_frames)
+        with torch.no_grad():
+          for step in range(args.max_episode_length):
+              logit = model(state)
+              # Sample and send action
+              prob = F.softmax(logit, dim=1)
+              action = prob.max(1)[1].data.numpy()
+              state, reward, term, trunc, _ = env.step(action[0])
+              done = term or trunc
+              this_model_return += reward
+              this_model_num_frames += 1
+              if done:
+                  break
+          all_returns.append(this_model_return)
+          all_num_frames.append(this_model_num_frames)
     return_queue.put((random_seeds, all_returns, all_num_frames, are_negative))
 
 
@@ -63,10 +51,8 @@ def perturb_model(args, model, random_seed, env):
     as well as the negative perturbation, and returns both perturbed
     models.
     """
-    new_model = ES(env.observation_space.shape[0],
-                   env.action_space, args.small_net)
-    anti_model = ES(env.observation_space.shape[0],
-                    env.action_space, args.small_net)
+    new_model = copy.deepcopy(model)
+    anti_model = copy.deepcopy(model)
     new_model.load_state_dict(model.state_dict())
     anti_model.load_state_dict(model.state_dict())
     np.random.seed(random_seed)
@@ -129,7 +115,7 @@ def gradient_update(args, synced_model, returns, random_seeds, neg_list,
               'Learning rate: %f\n'
               'Total num frames seen: %d\n'
               'Unperturbed reward: %f\n'
-              'Unperturbed rank: %s\n' 
+              'Unperturbed rank: %s\n'
               'Using Adam: %r\n\n' %
               (num_eps, np.mean(returns), np.var(returns), max(returns),
                min(returns), batch_size,
@@ -170,7 +156,7 @@ def gradient_update(args, synced_model, returns, random_seeds, neg_list,
                 grad = torch.from_numpy((args.n*args.sigma) * (reward*multiplier*eps)).float()
 
                 localGrads.append(grad)
-                
+
                 if len(optimConfig) == idx:
                     optimConfig.append({ 'learningRate' : args.lr  })
                 idx = idx + 1
@@ -183,8 +169,12 @@ def gradient_update(args, synced_model, returns, random_seeds, neg_list,
 
         idx = 0
         for k, v in synced_model.es_params():
-            r, _ = legacyOptim.adam( lambda x:  (1, -globalGrads[idx]), v , optimConfig[idx])
-            v.copy_(r)
+            v = torch.tensor([1.0, 2.0], requires_grad=True)
+            optimizer = torch.optim.Adam([v], lr=0.001)
+            optimizer.zero_grad()
+            v.grad = -globalGrads[idx]
+            optimizer.step()
+            #
             idx = idx + 1
     else:
         # For each model, generate the same random numbers as we did
@@ -199,38 +189,10 @@ def gradient_update(args, synced_model, returns, random_seeds, neg_list,
                                       (reward*multiplier*eps)).float()
         args.lr *= args.lr_decay
 
-    torch.save(synced_model.state_dict(),
+    if (chkpt_dir is not None):
+        torch.save(synced_model.state_dict(),
                os.path.join(chkpt_dir, 'latest.pth'))
     return synced_model
-
-
-def render_env(args, model, env):
-    while True:
-        state = env.reset()
-        state = torch.from_numpy(state)
-        this_model_return = 0
-        if not args.small_net:
-            cx = Variable(torch.zeros(1, 256))
-            hx = Variable(torch.zeros(1, 256))
-        done = False
-        while not done:
-            if args.small_net:
-                state = state.float()
-                state = state.view(1, env.observation_space.shape[0])
-                logit = model(Variable(state, volatile=True))
-            else:
-                logit, (hx, cx) = model(
-                    (Variable(state.unsqueeze(0), volatile=True),
-                     (hx, cx)))
-
-            prob = F.softmax(logit)
-            action = prob.max(1)[1].data.numpy()
-            state, reward, done, _ = env.step(action[0, 0])
-            env.render()
-            this_model_return += reward
-            state = torch.from_numpy(state)
-        print('Reward: %f' % this_model_return)
-
 
 def generate_seeds_and_models(args, synced_model, env):
     """
@@ -267,6 +229,7 @@ def train_loop(args, synced_model, env, chkpt_dir):
         # Start with negative true because pop() makes us go backwards
         is_negative = True
         # Add all peturbed models to the queue
+
         while all_models:
             perturbed_model = all_models.pop()
             seed = all_seeds.pop()
