@@ -1,3 +1,4 @@
+# @title ES_fromRLlib
 from __future__ import absolute_import, division, print_function
 
 import numpy as np
@@ -17,6 +18,12 @@ def obs_to_tensor(obs):
     else:
         return torch.tensor(obs).unsqueeze(0).float()
 
+def sample_action(logits):
+    # Sample and send action
+    prob = F.softmax(logits, dim=1)
+    action = prob.max(1)[1].data.numpy()
+    return action[0]
+
 class ES_fromRLlib(torch.nn.Module):
 
     def __init__(self, module):
@@ -29,7 +36,7 @@ class ES_fromRLlib(torch.nn.Module):
         inputs = {Columns.OBS: inputs}
         x = self.module.forward_train(inputs)
         x = x[Columns.ACTION_DIST_INPUTS]
-        return x
+        return sample_action(x)
 
     def count_parameters(self):
         count = 0
